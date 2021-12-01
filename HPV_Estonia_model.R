@@ -1,5 +1,7 @@
+rm(list=ls())
+
 library(data.table)
-library(logbin)
+library(mice)
 
 dat1 <- as.data.table(openxlsx::read.xlsx("/data/HPVTests/P07_2021-07-07_3065GD_HPV_proovikogumiseInfo_20210630_Tammesoo_1.0_KRS.xlsx"))
 dat2 <- as.data.table(openxlsx::read.xlsx("/data/HPVTests/P07_2021-07-12_3065GD_HPV_Koodiseosed_1.0_KRS.xlsx"))
@@ -98,6 +100,8 @@ dat_use[,ageGroup2:=as.factor(ageGroup2)]
 
 dat_use[,nationality:=as.factor(nationality)]
 
+
+
 #merge with the new file from Anna
 dat_use <- merge(dat_use,dat4,by.x="SKOOD",by.y="SKOOD",all.x=T,all.y=T)
 #Keep only those who have test result
@@ -113,6 +117,11 @@ dat_use2 <- merge(dat_use,dat_smoke_use,by="SKOOD",all.x=T)
 dat_use2 <- merge(dat_use2,dat_fem_health_use,by="SKOOD",all.x=T)
 dat_use2 <- merge(dat_use2,dat_partners_use,by="SKOOD",all.x=T)
 
+dat_use2[,smoking:=as.factor(smoking)]
+dat_use2[,isEducation:=as.factor(isEducation)]
+dat_use2[,ParityClass:=as.factor(ParityClass)]
+dat_use2[,Nationality:=as.factor(Nationality)]
+
 #Merge with prs file
 dat_use2 <- merge(dat_use2,prs,by="VCode",all.x=T)
 dat_use2 <- merge(dat_use2,prs_meta[,list(SKOOD,best_ldpred_score)],by="SKOOD",all.x=T)
@@ -121,140 +130,139 @@ dat_use2[,bWICD10:=scale(bWICD10)]
 dat_use2[,bRICD10:=scale(bRICD10)]
 dat_use2[,best_ldpred_score:=scale(best_ldpred_score)]
 
-#Analysis
-andat1 <- copy(dat_use2)
-andat1 <- andat1[!is.na(statusHPV),]
-#andat1[,c("marginalEst","marginalEst_UK_Kaiser"):=NULL]
-#andat2 <- dat_use[,list(statusHPV,county,ageGroup,bRICD10)]
+#Analysis data set
+andat0 <- copy(dat_use2)
+andat0 <- andat0[!is.na(statusHPV),]
 
 #relevel
-andat1[, MaritalStatus:=factor(MaritalStatus, levels = c("Married", "Widow", "Partnered", "Divorced", "Single"))] 
-andat1[, Condition:=factor(Condition, levels = c("Bad", "Average", "Good"))] 
-andat1[smoking == "Never",smokingNew:="No"]
-andat1[smoking != "Never",smokingNew:="Yes"]
+andat0[, MaritalStatus:=factor(MaritalStatus, levels = c("Married", "Widow", "Partnered", "Divorced", "Single"))] 
+andat0[, Condition:=factor(Condition, levels = c("Bad", "Average", "Good"))] 
+andat0[smoking == "Never",smokingNew:="No"]
+andat0[smoking != "Never",smokingNew:="Yes"]
 
-andat2 <- copy(andat1)
-andat2 <- andat2[!is.na(bRICD10),]
+#Remove variable that are not used in the analysis or imputation
+andat0[,c("SKOOD","VCode","ageGroup2","SchoolYears","Employment","Income","marginalEst","marginalEst_UK_Kaiser","smokingNew","smoking","county"):=NULL]
 
-library(mice)
+#Define analysis data sets for each PRS
+andat_bR <- copy(andat0)
+andat_bW <- copy(andat0)
+andat_ldpred <- copy(andat0)
+
+andat_bR[,c("bWICD10","best_ldpred_score"):=NULL]
+andat_bW[,c("bRICD10","best_ldpred_score"):=NULL]
+andat_ldpred[,c("bRICD10","bWICD10"):=NULL]
+
+
+
 #1. Version with impute all
 
 #imp <- mice(andat1[!is.na(statusHPV),], seed = 123, print = FALSE,m=10)
 
-imp <- mice(andat2, seed = 123, print = FALSE,m=10)
 
-fit_bRAll <- with(imp, glm(statusHPV ~ bRICD10  + MaritalStatus + Condition + partnersTotal + isEducation
-                         ,family = binomial))
-est_bRAll <- pool(fit_bRAll)
-A_bRAll <- as.data.table(summary(est_bRAll))
-
-fit_ldpredAll <- with(imp, glm(statusHPV ~ best_ldpred_score  + MaritalStatus + Condition + partnersTotal + isEducation
-                       ,family = binomial))
-est_ldpredAll <- pool(fit_ldpredAll)
-A_ldpredAll <- as.data.table(summary(est_ldpredAll))
-
-###
-
-fit_bR <- with(imp, glm(statusHPV ~ bRICD10 ,family = binomial))
-est_bR <- pool(fit_bR)
-A_bR <- as.data.table(summary(est_bR))
-
-fit_ldpred <- with(imp, glm(statusHPV ~ best_ldpred_score ,family = binomial))
-est_ldpred <- pool(fit_ldpred)
-A_ldpred <- as.data.table(summary(est_ldpred))
-
-
-
-
-
-
-A <- as.data.table(summary(est1))
-
-
-A[,OR:=round(exp(estimate),2)]
-A[,OR_lower:=round(exp(estimate-qnorm(0.975)*std.error),2)]
-A[,OR_upper:=round(exp(estimate+qnorm(0.975)*std.error),2)]
-A[,`p-value`:=as.character(round(p.value,4))]
-A[,`95% CI`:=paste0("(",OR_lower,",",OR_upper,")")]
-A[`p-value` =="0",`p-value`:="<0.0001"]
-
-printRes <- A[,list(term,OR,`95% CI`,`p-value`)]
-printRes <- printRes[-1,]
-baseLines <- data.table(term=c("ageGroup30-33","NationalityEstonian","isEducationHigher","MaritalStatusMarried","ConditionBad"), #smokingCurrent
-                           OR=c(1,1,1,1,1,1),
-                           `95% CI`=c(NA,NA,NA,NA,NA,NA),
-                           `p-value`=c(NA,NA,NA,NA,NA,NA))
-printRes <- rbind(printRes,baseLines)
-printRes[,distFrom1:=abs(OR-1)]
-printRes[,prefix:=substr(term,0,3)]
-printRes <- printRes[order(as.character(prefix),distFrom1),]
-printRes[OR==1,termTmp:=term] 
-printRes[,term:=gsub("Condition","",term)]
-printRes[,term:=gsub("MaritalStatus","",term)]
-printRes[,term:=gsub("Nationality","",term)]
-printRes[,term:=gsub("ageGroup","",term)]
-printRes[,term:=gsub("bWICD10","Genetic risk",term)]
-printRes[,term:=gsub("isEducation","",term)]
-printRes[,term:=gsub("smoking","",term)]
-
-for(n in 1:nrow(printRes)){
-  printRes[n,termTmp:=gsub(term,"",termTmp)]
+analysisFunction <- function(dat, impCount = 10, usedSeed = 123) {
+  variables <- setdiff(colnames(dat), "statusHPV")
+  .env <- environment()
+  f1 <- as.formula( paste("statusHPV", paste(variables, collapse = " + "), sep = " ~ "), env = .env)
+  imp <- mice(dat, seed = 123, print = T,m=5)
+  fit <- with(imp, glm( f1, family = binomial))
+  est <- pool(fit)
+  return(as.data.table(summary(est)))
 }
-printRes[termTmp=="isEducation",termTmp:="Education"]
-printRes[is.na(termTmp),termTmp:=""]
-printRes[OR==1,`Variable (baseline)`:=paste0(termTmp," (",term,")")]
-printRes[OR==1,term:=""]
-printRes[term=="Genetic risk",`Variable (baseline)`:=term]
-printRes[term=="Genetic risk",term:=""]
 
-print(xtable(printRes[,list(`Variable (baseline)`,term,OR,`95% CI`,`p-value`)]),include.rownames=F)
+analysisFunctionUnadjusted <- function(dat, useVar, impCount = 10, usedSeed = 123) {
+  f1 <- as.formula(paste("statusHPV",  useVar,  sep = " ~ "))
+  imp <- mice(dat, seed = usedSeed, print = FALSE,m=impCount)
+  fit <- with(imp, glm(f1,family = binomial))
+  est <- pool(fit)
+  return(as.data.table(summary(est)))
+}
 
+#1) bR all
+useSeed <- 7000
+imp <- mice(andat_bR, seed = useSeed, print = T,m=10)
+fit <- with(imp, glm( statusHPV ~ bRICD10 + ageGroup + Nationality + MaritalStatus + Condition + isEducation + ParityClass + num_of_abortions + has_used_hormonal_contraceptives + firstIntercourseAge + partnersTotal, family = binomial))
+est <- pool(fit)
+A_bRAll <- as.data.table(summary(est))
 
-
-#unadjusted analysis
-imp <- mice(andat1[!is.na(statusHPV),], seed = 123, print = FALSE,m=10)
-fit <- with(imp, glm(statusHPV ~ bRICD10,family = binomial))
-est1 <- pool(fit)
-A <- as.data.table(summary(est1))
-
-A[,OR:=round(exp(estimate),2)]
-A[,OR_lower:=round(exp(estimate-qnorm(0.975)*std.error),2)]
-A[,OR_upper:=round(exp(estimate+qnorm(0.975)*std.error),2)]
-A[,`p-value`:=as.character(round(p.value,4))]
-A[,`95% CI`:=paste0("(",OR_lower,",",OR_upper,")")]
-A[`p-value` =="0",`p-value`:="<0.0001"]
-
-printRes_bR <- A[,list(term,OR,`95% CI`,`p-value`)]
-printRes_bR <- printRes_bR[-1,]
+#2) bR unadjusted
+#imp <- mice(andat_bR, seed = 123, print = T,m=5)
+fit <- with(imp, glm( statusHPV ~ bRICD10 , family = binomial))
+est <- pool(fit)
+A_bRUndjust <- as.data.table(summary(est))
 
 
-imp <- mice(andat1[!is.na(statusHPV),], seed = 123, print = FALSE,m=10)
-fit <- with(imp, glm(statusHPV ~ bWICD10,family = binomial))
-est1 <- pool(fit)
-A <- as.data.table(summary(est1))
+#3) andat_ldpred all
+imp <- mice(andat_ldpred, seed = useSeed, print = T,m=10)
+fit <- with(imp, glm( statusHPV ~ best_ldpred_score + ageGroup + Nationality + MaritalStatus + Condition + isEducation + ParityClass + num_of_abortions + has_used_hormonal_contraceptives + firstIntercourseAge + partnersTotal, family = binomial))
+est <- pool(fit)
+A_ldPredAll <- as.data.table(summary(est))
 
-A[,OR:=round(exp(estimate),2)]
-A[,OR_lower:=round(exp(estimate-qnorm(0.975)*std.error),2)]
-A[,OR_upper:=round(exp(estimate+qnorm(0.975)*std.error),2)]
-A[,`p-value`:=as.character(round(p.value,4))]
-A[,`95% CI`:=paste0("(",OR_lower,",",OR_upper,")")]
-A[`p-value` =="0",`p-value`:="<0.0001"]
-
-printRes_bW <- A[,list(term,OR,`95% CI`,`p-value`)]
-printRes_bW <- printRes_bW[-1,]
-
-printRes <- rbind(printRes_bR,printRes_bW)
-print(xtable(printRes[,list(term,OR,`95% CI`,`p-value`)]),include.rownames=F)
+#4) andat_ldpred unadjusted
+#imp <- mice(andat_ldpred, seed = 123, print = T,m=5)
+fit <- with(imp, glm( statusHPV ~ best_ldpred_score , family = binomial))
+est <- pool(fit)
+A_ldPredUndjust <- as.data.table(summary(est))
 
 
-#####
-library(mice)
-imp <- mice(andat1[!is.na(statusHPV),], seed = 123, print = FALSE,m=10)
-fit <- with(imp, lm(statusHPV ~ ageGroup + bRICD10 + Nationality +isEducation +MaritalStatus+Condition))
-est1 <- pool(fit)
-A <- as.data.table(summary(est1))
-dat_samp1 <- complete(imp,1)
+A <- copy(A_ldPredAll)
 
-a <- lm(statusHPV ~ ageGroup + bRICD10 + Nationality +isEducation +MaritalStatus+Condition,data=dat_samp1)
-mm <- model.matrix(a)
-mm <- scale(mm)
+
+latexFormatter <- function(A) {
+
+  A[, OR := round(exp(estimate), 2)]
+  A[, OR_lower := round(exp(estimate - qnorm(0.975) * std.error), 2)]
+  A[, OR_upper := round(exp(estimate + qnorm(0.975) * std.error), 2)]
+  A[, `p-value` := as.character(round(p.value, 4))]
+  A[, `95% CI` := paste0("(", OR_lower, ",", OR_upper, ")")]
+  A[`p-value` == "0", `p-value` := "<0.0001"]
+
+  printRes <- A[, list(term, OR, `95% CI`, `p-value`)]
+  printRes <- printRes[-1,]
+  baseLines <- data.table(term = c("ageGroup30-33", "NationalityEstonian", "isEducationHigher", "MaritalStatusMarried", "ConditionBad", "ParityClass0", "has_used_hormonal_contraceptivesNo"), # smokingCurrent
+                           OR = c(1, 1, 1, 1, 1, 1, 1),
+                           `95% CI` = c(NA, NA, NA, NA, NA, NA, NA),
+                           `p-value` = c(NA, NA, NA, NA, NA, NA, NA))
+  printRes <- rbind(printRes, baseLines)
+  printRes[, distFrom1 := abs(OR - 1)]
+  printRes[, prefix := substr(term, 0, 3)]
+  printRes <- printRes[order(as.character(prefix), distFrom1),]
+  printRes[OR == 1, termTmp := term]
+  printRes[term == "has_used_hormonal_contraceptives", term := "has_used_hormonal_contraceptivesYes"]
+  printRes[, term := gsub("Condition", "", term)]
+  printRes[, term := gsub("MaritalStatus", "", term)]
+  printRes[, term := gsub("Nationality", "", term)]
+  printRes[, term := gsub("ageGroup", "", term)]
+  printRes[, term := gsub("bRICD10", "Genetic risk (Bayesian model)", term)]
+  printRes[, term := gsub("best_ldpred_score", "Genetic risk (LDpred model)", term)]
+  printRes[, term := gsub("isEducation", "", term)]
+  printRes[, term := gsub("smoking", "", term)]
+  printRes[, term := gsub("has_used_hormonal_contraceptives", "", term)]
+  printRes[, term := gsub("ParityClass", "", term)]
+
+
+  for (n in 1:nrow(printRes)) {
+    printRes[n, termTmp := gsub(term, "", termTmp)]
+  }
+  printRes[termTmp == "isEducation", termTmp := "Education"]
+  printRes[is.na(termTmp), termTmp := ""]
+  printRes[OR == 1, `Variable (baseline)` := paste0(termTmp, " (", term, ")")]
+  printRes[OR == 1, term := ""]
+  printRes[grepl("Genetic risk", term), `Variable (baseline)` := term]
+  printRes[grepl("Genetic risk", term), term := ""]
+
+  #Fix the numeric variables
+  printRes[term == "firstIntercourseAge", `Variable (baseline)` := "First intercourse age"]
+  printRes[term == "num_of_abortions", `Variable (baseline)` := "Number of abortions"]
+  printRes[term == "partnersTotal", `Variable (baseline)` := "Total partners"]
+  printRes[term %in% c("firstIntercourseAge", "num_of_abortions", "partnersTotal"), term := ""]
+  printRes[`Variable (baseline)` == "MaritalStatus (Married)", `Variable (baseline)` := "Marital status (Married)"]
+  printRes[`Variable (baseline)` == "ParityClass (0)", `Variable (baseline)` := "Parity class (0)"]
+  printRes[`Variable (baseline)` == "ageGroup (30-33)", `Variable (baseline)` := "Age group (30-33)"]
+  printRes[`Variable (baseline)` == "has_used_hormonal_contraceptives (No)", `Variable (baseline)` := "Used hormonal contraceptives (No)"]
+
+  printRes[term == "notEstonian", term := "Not Estonian"]
+
+
+  print(xtable(printRes[, list(`Variable (baseline)`, term, OR, `95% CI`, `p-value`)]), include.rownames = F)
+
+}
